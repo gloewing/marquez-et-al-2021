@@ -1,0 +1,544 @@
+---
+title: "Analysis for Guillermo - Extinction"
+author: "Gabriel Loewinger"
+date: "6/14/21"
+output: pdf_document
+---
+
+# Cross Sectional - Test Day GLM (Summed across trials)
+## GLM Model Selection and Model Diagnostics
+```{r, include = TRUE}
+
+library(ggplot2)
+library(MASS)
+library(AICcmodavg)
+
+setwd("~/Desktop/Research Final/Guillermo Collaborations/Fear Habituation 9-10-20")
+source("~/Desktop/Research Final/R-utils/Utilities_Part5_2018.R") # from Methods 2
+
+# read in data
+dat <- read.csv("Test - Baseline.csv")
+
+# collapse observations 1-4 for cross sectional analysis
+dat4 <- data.frame( matrix(ncol = ncol(dat), nrow = nrow(dat) / 4) )
+names(dat4) <- names(dat)
+ids <- unique(dat$SUBJECT)[!is.na(unique(dat$SUBJECT))]
+n <- length(ids)
+
+# fill in dat3 with everyother row and update just the outcome below
+s <- seq(1, nrow(dat), by = 4)
+dat4 <- dat[s,]
+group <- as.factor(dat$SURPRISE[s])[1:n]
+# update time to just be 1 / 2 (1 is first two sessions)
+
+indx <- 1
+for(j in 1:length(unique(dat$SUBJECT))){
+    sub <- which(dat$SUBJECT == j) # rows of current subject
+    
+    # sum all time points
+    outcome <- sum(dat$Y[ sub ] )
+    
+    # update outcome
+    dat4$Y[indx] <- outcome
+    indx <- indx + 1 # move forward 2
+}
+
+dat4 <- dat4[1:n,-1] # remove time column
+dat4 <- cbind(dat4, group)
+
+# make reference level surprise
+dat4$group <- relevel(dat4$group, ref = "Surprise")
+
+## make time numeric for model that treats time as linear on log scale
+dat$TIME <-  as.numeric(dat$TRIAL)  # make baseline 0
+library(ggplot2)
+library(MASS)
+library(AICcmodavg)
+
+glm_pois <- glm( Y ~ BASELINE + group,
+                 data = dat4,
+                 family = poisson)
+
+# check for overdisperson
+pchisq(glm_pois$deviance, glm_pois$df.residual, lower.tail = FALSE) # < 0.05 so theres overdispersion
+glm_pois$deviance / glm_pois$df.residual # this is > 1 so there is overdispersion
+# overdispersion detected
+
+scatter.smooth(x = glm_pois$fitted.values,
+               y = residuals(glm_pois, type = "pearson")^2 , span = 2/3, degree = 1)
+abline(h = 1)
+
+glm_quasi <- glm( Y ~ BASELINE + group,
+                 data = dat4,
+                 family = quasipoisson)
+plot(glm_quasi$fitted.values, residuals(glm_quasi, type = "pearson")^2 )
+abline(h = 1)
+
+pchisq(glm_quasi$deviance, glm_quasi$df.residual, lower.tail = FALSE) # < 0.05 so theres overdispersion
+glm_quasi$deviance / glm_quasi$df.residual # this is > 1 so there is overdispersion
+
+scatter.smooth(x = glm_quasi$fitted.values,
+               y = residuals(glm_quasi, type = "pearson")^2 , span = 2/3, degree = 1)
+abline(h = 1)
+
+glm_nb <- glm.nb( Y ~ BASELINE + group,
+                 data = dat4)
+
+pchisq(glm_nb$deviance, glm_nb$df.residual, lower.tail = FALSE) # > 0.05 so no significant overdispersion
+
+glm_nb$deviance / glm_nb$df.residual # this is > 1 so there is still some overdispersion
+
+
+scatter.smooth(x = glm_nb$fitted.values,
+               y = residuals(glm_nb, type = "pearson")^2 , span = 2/3, degree = 1)
+abline(h = 1)
+
+
+# SE is not uniform across all the parameters
+robustSE(glm_pois)
+robustSE(glm_quasi)
+robustSE(glm_nb)
+```
+
+## GLM Inference -- Double check that robust SEs are not different since minor overdispersion detected (but not statistically significant)
+```{r, include = TRUE}
+source("~/Desktop/Research Final/R-utils/Utilities_Part5_2018.R") # from Methods 2
+
+glm_pois <- glm( Y ~ BASELINE + group,
+                 data = dat4,
+                 family = poisson)
+
+# opted to use robust SE for inference -- exponentiate to get on regular scale
+poisRobustCI <- robustCIglm(glm_pois)
+p <- length(coef(glm_pois))
+zVals <- vector(length = p)
+seVec <- sqrt(diag(robustVCov(glm_pois)))
+
+# p-values from wald test using robust SEs
+pValues <- vector(length = p)
+for(j in 1:p){
+    indx <- j # which beta to test
+    poisVcov <- robustVCov(glm_pois)[indx, indx] # variance vcovariance matrix of just interaction terms
+    betas <- coef(glm_pois)[indx]
+    waldTest <- betas %*% solve(poisVcov) %*% betas # test with robust se
+    zVals[j] <- betas / seVec[indx]
+    pValues[j] <- 1 - pchisq(waldTest, df = length(indx)) # p value of interaction
+}
+
+# CIs and p-values
+resultsMat <- cbind(poisRobustCI, z_value = zVals, 
+                    pValues = round(pValues, 3) )
+resultsMat <- resultsMat[,-c(2,3)] # remove naive standard errors
+
+# inference with robust SEs to double check that initial inference (with naive SEs) is valid 
+print(resultsMat)
+```
+
+Robust SEs (as well as inference based on them) are not qualitatively different than standard inference so we proceed with initial analysis (i.e., using naive SEs). The only difference is p-values are slightly larger (toward the null) with standard inference.
+
+## GLM Tables
+```{r, include = TRUE}
+library(kableExtra)
+library(tidyverse)
+
+tab <- summary(glm_nb)$coefficients
+betaHat <- tab[,1]
+SEs <- tab[,2]
+CIsUp <- exp( betaHat + 1.96 * SEs)
+CIsLow <- exp( betaHat - 1.96 * SEs)
+
+betaHat <- exp( betaHat ) # exponentiate coefficients
+
+resultsMat <- cbind(betaHat, CIsLow, CIsUp, tab[,3], tab[,4])
+resultsMat <- round(resultsMat, 3)
+
+# effects from the model
+colnames(resultsMat) <- c("Exp()", "95% CI-Lower", "95% CI-Upper", "z value",  "p-value")
+kable( round(resultsMat, 3), format = "latex", booktabs = T) %>% kable_styling(position = "center")
+```
+
+# Phase 1
+## Fit model and make tables (average of last 2 trials)
+
+```{r, include = TRUE}
+setwd("~/Desktop/Research Final/Guillermo Collaborations/Fear Habituation 9-10-20")
+
+source("~/Desktop/Research Final/R-utils/Utilities_Part5_2018.R") # from Methods 2
+
+library(ggplot2)
+library(MASS)
+library(AICcmodavg)
+library(boot)
+library(nlme)
+library(lme4)
+
+
+########################################
+# Include Baseline as Covaraite
+#######################################
+set.seed(1)
+# only the medium group
+dat <- read.csv("Phase 1.csv")[,1:5] # remove columns of NAs
+
+# remove rows of NAs
+dat <- dat[!anyNA(dat),]
+
+# should have 600 rows and 5 columns
+
+# make reference level surprise
+dat$Cue_Light <- ifelse(dat$Cue == "Tone", 0, 1) #relevel(dat$Cue, ref = "Tone")
+dat$Surp <- ifelse(dat$SURPRISE == "Surprise", 1, 0) # if surprise then code as 1
+dat$Naive <- ifelse(dat$SURPRISE == unique(dat$SURPRISE)[3], 1, 0) # if naive code as 1
+
+dat <- dat[,-c(1,4)] # remove Surprise column and original Cue column
+
+# rename column Surp to Surprise
+indx <- which(names(dat) == "Surp")
+names(dat)[indx] <- "Surprise"
+rm(indx)
+
+
+#### average last two sessions
+# last trials are 9 and 10
+dat <- dat[dat$Session >= 9,] # remove all but last two trials
+indx <- 1
+
+# not naive
+subIDs <- unique( dat$SUBJECT[dat$Naive == 0] )
+
+for(j in 1:length(unique(dat$SUBJECT)) ){
+    
+    sub <- which(dat$SUBJECT == j) # rows of current subject last two trials
+    
+    # check to make sure it isnt naive--otherwise do not sum for light because they dont have light
+    if(dat$Naive[sub][1] == 0 ){
+        
+        # sum all time points for light
+        sLight <- sub[c(1,3)] # c(1,3) is for Light and c(2,4) is for Tone
+        outcome <- sum(dat$Y[ sLight ] )
+        
+        # update outcome
+        dat$Y[sLight] <- outcome
+        
+        # sum all time points for tone
+        sTone <- sub[c(2,4)]
+        outcome <- sum(dat$Y[ sTone ] )
+        
+        # update outcome
+        dat$Y[sTone] <- outcome
+    
+    }else{
+        # if Naive group
+                # sum all time points for tone
+        sTone <- sub
+        outcome <- sum(dat$Y[ sTone ] )
+        
+        # update outcome
+        dat$Y[sTone] <- outcome
+    }
+    
+
+    
+}
+
+maxIndx <- max( which(dat$Naive == 0) ) # last row of Non- Naive group
+
+# remove every other row since they are not redundanbt ( all the outcomes are the same for each row of each subject now since we summed them above)
+dat <- dat[sort( c(seq(1, maxIndx, by = 4),
+             seq(2, maxIndx, by = 4),
+            seq(maxIndx + 1, nrow(dat), by = 2) )),
+             ]
+
+dat$Y <- dat$Y * 10 # they averaged across 10 trials so multiple by 10
+
+fit_pois <- glmer(Y ~ Cue_Light + Surprise + Naive +  Cue_Light * Surprise +
+               (1 | SUBJECT),
+               data = dat,
+               family = poisson,
+               nAGQ = 25)
+AIC(fit_pois)
+
+# boundary singular -- use Poisson
+fit_nb <- glmer.nb(Y ~ Cue_Light + Surprise + Naive +  Cue_Light * Surprise +
+               (1 | SUBJECT),
+               data = dat,
+               nAGQ = 25)
+AIC(fit_nb)
+
+############################
+# Post hocs for GLMM
+############################
+library(lme4)
+library(mvtnorm)
+library(multcomp)
+library(lattice)
+
+# model contrasts
+c1 <- rbind("Tone: Surprise vs. Naive" = c(0,0,1,-1,0),
+            "Tone: Surprise vs. No Surprise" = c(0,0,1,0,0),
+            "Tone: Naive vs. No Surprise" = c(0,0,0,1,0),
+            "Light: Surprise vs. No Surprise" = c(0,0,1,0,1),
+            "Surprise: Light vs. Tone" = c(0,1,0,0,1),
+            "No Surprise: Light vs. Tone" = c(0,1,0,0,0)
+            )
+
+summary(glht(fit_pois, c1),  test = adjusted("bonferroni"))
+modSum <- summary(glht(fit_pois, c1),  test = adjusted("bonferroni"))
+
+tab <- modSum$test$coefficients
+betaHat <- modSum$test$coefficients
+SEs <- modSum$test$sigma
+CIsUp <- exp( betaHat + 1.96 * SEs)
+CIsLow <- exp( betaHat - 1.96 * SEs)
+
+modMat <- cbind(exp( modSum$test$coefficients ),
+                CIsLow, CIsUp,
+                modSum$test$tstat,
+                modSum$test$pvalues)
+
+resultsMat <- round(modMat, 3)
+library(kableExtra)
+colnames(resultsMat) <- c("Exp()", "95% CI-Lower", "95% CI-Upper", "z value",  "p-value")
+kable(round(resultsMat,3), format = "latex", booktabs = T) %>% kable_styling(position = "center")
+```
+
+# Phase 2
+## Fit models and make tables( last two trials only)
+
+```{r, include = TRUE}
+setwd("~/Desktop/Research Final/Guillermo Collaborations/Fear Habituation 9-10-20")
+
+source("~/Desktop/Research Final/R-utils/Utilities_Part5_2018.R") # from Methods 2
+
+library(ggplot2)
+library(MASS)
+library(AICcmodavg)
+library(boot)
+library(nlme)
+library(lme4)
+
+
+########################################
+# Include Baseline as Covaraite
+#######################################
+set.seed(1)
+# only the medium group
+dat <- read.csv("Phase 2.csv")[,1:5] # remove columns of NAs
+
+# remove rows of NAs
+# dat <- dat[!anyNA(dat),]
+
+# should have 600 rows and 5 columns
+
+# make reference level surprise
+dat$Cue_Light <- ifelse(dat$Cue == "Tone", 0, 1) #relevel(dat$Cue, ref = "Tone")
+dat$Surp <- ifelse(dat$SURPRISE == "Surprise", 1, 0) # if surprise then code as 1
+dat$Naive <- ifelse(dat$SURPRISE == unique(dat$SURPRISE)[3], 1, 0) # if naive code as 1
+
+dat <- dat[,-c(1,4)] # remove Surprise column and original Cue column
+
+# rename column Surp to Surprise
+indx <- which(names(dat) == "Surp")
+names(dat)[indx] <- "Surprise"
+rm(indx)
+
+
+#### average last two sessions
+# last trials are 9 and 10
+dat <- dat[dat$Session >= 3,] # remove all but last two trials
+indx <- 1
+
+# not naive
+subIDs <- unique( dat$SUBJECT[dat$Naive == 0] )
+
+# remove rows of NAs
+dat <- dat[!is.na(dat$SUBJECT),]
+
+for(j in 1:length(unique(dat$SUBJECT)) ){
+    
+    sub <- which(dat$SUBJECT == j) # rows of current subject last two trials
+    
+    # check to make sure it isnt naive--otherwise do not sum for light because they dont have light
+    if(dat$Naive[sub][1] == 0 ){
+        
+        # sum all time points for light
+        sLight <- sub[c(1,3)] # c(1,3) is for Light and c(2,4) is for Tone
+        outcome <- sum(dat$Y[ sLight ] )
+        
+        # update outcome
+        dat$Y[sLight] <- outcome
+        
+        # sum all time points for tone
+        sTone <- sub[c(2,4)]
+        outcome <- sum(dat$Y[ sTone ] )
+        
+        # update outcome
+        dat$Y[sTone] <- outcome
+    
+    }else{
+        # if Naive group
+                # sum all time points for tone
+        sTone <- sub
+        outcome <- sum(dat$Y[ sTone ] )
+        
+        # update outcome
+        dat$Y[sTone] <- outcome
+    }
+    
+
+    
+}
+
+maxIndx <- max( which(dat$Naive == 0) ) # last row of Non- Naive group
+
+# remove every other row since they are not redundanbt ( all the outcomes are the same for each row of each subject now since we summed them above)
+dat <- dat[sort( c(seq(1, maxIndx, by = 4),
+             seq(2, maxIndx, by = 4),
+            seq(maxIndx + 1, nrow(dat), by = 2) )),
+             ]
+
+dat$Y <- dat$Y * 10 # they averaged across 10 trials so multiple by 10
+
+fit_pois <- glmer(Y ~ Cue_Light + Surprise + Naive +  Cue_Light * Surprise +
+               (1 | SUBJECT),
+               data = dat,
+               family = poisson,
+               nAGQ = 25)
+AIC(fit_pois)
+
+# boundary singular -- use Poisson
+fit_nb <- glmer.nb(Y ~ Cue_Light + Surprise + Naive +  Cue_Light * Surprise +
+               (1 | SUBJECT),
+               data = dat,
+               nAGQ = 25)
+AIC(fit_nb)
+
+############################
+# Post hocs for GLMM
+############################
+library(lme4)
+library(mvtnorm)
+library(multcomp)
+library(lattice)
+
+# model contrasts
+c1 <- rbind("Tone: Surprise vs. Naive" = c(0,0,1,-1,0),
+            "Tone: Surprise vs. No Surprise" = c(0,0,1,0,0),
+            "Tone: Naive vs. No Surprise" = c(0,0,0,1,0),
+            "Light: Surprise vs. No Surprise" = c(0,0,1,0,1),
+            "Surprise: Light vs. Tone" = c(0,1,0,0,1),
+            "No Surprise: Light vs. Tone" = c(0,1,0,0,0)
+            )
+
+summary(glht(fit_pois, c1),  test = adjusted("bonferroni"))
+modSum <- summary(glht(fit_pois, c1),  test = adjusted("bonferroni"))
+
+tab <- modSum$test$coefficients
+betaHat <- modSum$test$coefficients
+SEs <- modSum$test$sigma
+CIsUp <- exp( betaHat + 1.96 * SEs)
+CIsLow <- exp( betaHat - 1.96 * SEs)
+
+modMat <- cbind(exp( modSum$test$coefficients ),
+                CIsLow, CIsUp,
+                modSum$test$tstat,
+                modSum$test$pvalues)
+
+resultsMat <- round(modMat, 3)
+library(kableExtra)
+colnames(resultsMat) <- c("Exp()", "95% CI-Lower", "95% CI-Upper", "z value",  "p-value")
+kable(round(resultsMat,3), format = "latex", booktabs = T) %>% kable_styling(position = "center")
+```
+
+# Tone Baseline Analysis
+## Fit model and assess model diagnostics
+```{r, include = TRUE}
+setwd("~/Desktop/Research Final/Guillermo Collaborations/Fear Habituation 9-10-20")
+source("~/Desktop/Research Final/R-utils/Utilities_Part5_2018.R") # from Methods 2
+
+dat <- read.csv("Baseline.csv")
+
+ids <- unique(dat$SUBJECT)[!is.na(unique(dat$SUBJECT))]
+n <- length(ids)
+dat <- dat[1:n,] # remove NAs
+
+group <- as.factor(dat$SURPRISE)
+dat4 <- dat # just to make code consistent as above for test day analysis
+# update time to just be 1 / 2 (1 is first two sessions)
+dat4 <- cbind(dat4[1:n,], group)
+
+# make reference level surprise
+dat4$group <- relevel(dat4$group, ref = "Surprise")
+
+dat4$Y <- 5 * dat4$Y # it was an average across 5 trials so multiply by 5 to make it a count
+
+## make time numeric for model that treats time as linear on log scale
+library(ggplot2)
+library(MASS)
+library(AICcmodavg)
+
+glm_pois <- glm( Y ~ group,
+                 data = dat4,
+                 family = poisson)
+
+# check for overdisperson
+pchisq(glm_pois$deviance, glm_pois$df.residual, lower.tail = FALSE) # < 0.05 so theres overdispersion
+glm_pois$deviance / glm_pois$df.residual # this is > 1 so there is overdispersion
+# overdispersion detected
+
+scatter.smooth(x = glm_pois$fitted.values,
+               y = residuals(glm_pois, type = "pearson")^2 , span = 2/3, degree = 1)
+abline(h = 1)
+
+glm_quasi <- glm( Y ~ group,
+                 data = dat4,
+                 family = quasipoisson)
+plot(glm_quasi$fitted.values, residuals(glm_quasi, type = "pearson")^2 )
+abline(h = 1)
+
+pchisq(glm_quasi$deviance, glm_quasi$df.residual, lower.tail = FALSE) # < 0.05 so theres overdispersion
+glm_quasi$deviance / glm_quasi$df.residual # this is > 1 so there is overdispersion
+
+scatter.smooth(x = glm_quasi$fitted.values,
+               y = residuals(glm_quasi, type = "pearson")^2 , span = 2/3, degree = 1)
+abline(h = 1)
+
+glm_nb <- glm.nb( Y ~ group,
+                 data = dat4)
+
+pchisq(glm_nb$deviance, glm_nb$df.residual, lower.tail = FALSE) # > 0.05 so no significant overdispersion
+
+glm_nb$deviance / glm_nb$df.residual # this is > 1 so there is still some overdispersion
+
+
+scatter.smooth(x = glm_nb$fitted.values,
+               y = residuals(glm_nb, type = "pearson")^2 , span = 2/3, degree = 1)
+abline(h = 1)
+
+
+# SE is not uniform across all the parameters
+robustSE(glm_pois)
+robustSE(glm_quasi)
+robustSE(glm_nb)
+```
+
+## GLM Tables
+```{r, include = TRUE}
+library(kableExtra)
+library(tidyverse)
+
+tab <- summary(glm_nb)$coefficients
+betaHat <- tab[,1]
+SEs <- tab[,2]
+CIsUp <- exp( betaHat + 1.96 * SEs)
+CIsLow <- exp( betaHat - 1.96 * SEs)
+
+betaHat <- exp( betaHat ) # exponentiate coefficients
+
+resultsMat <- cbind(betaHat, CIsLow, CIsUp, tab[,3], tab[,4])
+resultsMat <- round(resultsMat, 3)
+
+# effects from the model
+colnames(resultsMat) <- c("Exp()", "95% CI-Lower", "95% CI-Upper", "z value",  "p-value")
+kable(round(resultsMat,3), format = "latex", booktabs = T) %>% kable_styling(position = "center")
+```
